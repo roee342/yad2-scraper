@@ -4,64 +4,66 @@ const fs = require('fs');
 const config = require('./config.json');
 
 const getYad2Response = async (url) => {
-    const requestOptions = {
-        method: 'GET',
-        redirect: 'follow',
-        headers: {
-            'User-Agent': 'Mozilla/5.0'
-        }
-    };
     try {
-        const res = await fetch(url, requestOptions);
+        const res = await fetch(url);
         return await res.text();
     } catch (err) {
-        console.log(err);
+        console.log("Request error:", err);
+        return null;
     }
 };
 
-const scrapeListings = async (url) => {
+const scrapeItems = async (url) => {
     const html = await getYad2Response(url);
-    if (!html) throw new Error("No HTML from Yad2");
+    if (!html) throw new Error("Could not get Yad2 response");
 
     const $ = cheerio.load(html);
-    const pageTitle = $("title").first().text();
-    if (pageTitle.includes("ShieldSquare")) throw new Error("Captcha / bot detection");
+    const titleText = $("title").text();
+    if (titleText === "ShieldSquare Captcha") throw new Error("Bot detection");
 
-    const listings = [];
+    const items = [];
+    $('.feeditem').each((_, elem) => {
+        const pic = $(elem).find('.pic img').attr('src');
+        const title = $(elem).find('.title').text().trim();
+        const price = $(elem).find('.price').text().trim();
+        const location = $(elem).find('.subtitle').text().trim();
+        const itemId = $(elem).attr('id');
 
-    $(".feeditem").each((_, el) => {
-        const $el = $(el);
-        const imgSrc = $el.find(".feed_image img").attr("src") || null;
-        const title = $el.find(".title").text().trim() || null;
-        const price = $el.find(".price").text().trim() || null;
-        const location = $el.find(".subtitle").text().trim() || null;
-
-        if (title && price && location) {
-            const id = `${title} | ${location} | ${price}`;
-            listings.push({ id, title, price, location, imgSrc });
+        if (pic && itemId) {
+            items.push({
+                id: itemId,
+                img: pic,
+                title,
+                price,
+                location
+            });
         }
     });
-
-    return listings;
+    return items;
 };
 
-const checkForNewItems = (topic, listings) => {
-    const dirPath = './data';
-    const filePath = `${dirPath}/${topic}.json`;
+const checkForNewItems = async (items, topic) => {
+    const filePath = `./data/${topic}.json`;
+    let seenIds = [];
 
-    if (!fs.existsSync(dirPath)) fs.mkdirSync(dirPath);
-    if (!fs.existsSync(filePath)) fs.writeFileSync(filePath, '[]');
+    try {
+        seenIds = JSON.parse(fs.readFileSync(filePath));
+    } catch (e) {
+        if (e.code === 'ENOENT') {
+            fs.mkdirSync('data', { recursive: true });
+            fs.writeFileSync(filePath, JSON.stringify([]));
+        } else {
+            console.error(e);
+            throw new Error("Could not read or write file");
+        }
+    }
 
-    const savedItems = JSON.parse(fs.readFileSync(filePath));
-    const savedIds = new Set(savedItems.map(item => item.id));
-    const newItems = listings.filter(item => !savedIds.has(item.id));
-
+    const newItems = items.filter(item => !seenIds.includes(item.id));
     if (newItems.length > 0) {
-        const updated = [...savedItems, ...newItems];
+        const updated = [...new Set([...seenIds, ...newItems.map(i => i.id)])];
         fs.writeFileSync(filePath, JSON.stringify(updated, null, 2));
         fs.writeFileSync("push_me", "");
     }
-
     return newItems;
 };
 
@@ -71,32 +73,28 @@ const scrape = async (topic, url) => {
     const telenode = new Telenode({ apiToken });
 
     try {
-        await telenode.sendTextMessage(`🔍 מתחיל סריקה עבור "${topic}"\n${url}`, chatId);
-        const listings = await scrapeListings(url);
-        const newItems = checkForNewItems(topic, listings);
+        const items = await scrapeItems(url);
+        const newItems = await checkForNewItems(items, topic);
 
         if (newItems.length > 0) {
             for (const item of newItems) {
-                let message = `🆕 מודעה חדשה:\n\n🏷️ ${item.title}\n💰 ${item.price}\n📍 ${item.location}`;
-                if (item.imgSrc) {
-                    await telenode.sendPhoto(item.imgSrc, chatId, message);
-                } else {
-                    await telenode.sendTextMessage(message, chatId);
-                }
+                const message = `🏠 ${item.title || 'No title'}\n📍 ${item.location || 'Unknown'}\n💰 ${item.price || 'No price'}\n🖼️ ${item.img}`;
+                await telenode.sendTextMessage(message, chatId);
             }
-        } else {
-            await telenode.sendTextMessage("😴 אין מודעות חדשות כרגע", chatId);
         }
     } catch (e) {
-        const errorMsg = `❌ שגיאה:\n${e.message || e}`;
-        await telenode.sendTextMessage(errorMsg, chatId);
+        const errMsg = e?.message || String(e);
+        await telenode.sendTextMessage(`Scan failed: ${errMsg}`, chatId);
         throw e;
     }
 };
 
 const program = async () => {
-    const activeProjects = config.projects.filter(p => !p.disabled);
-    await Promise.all(activeProjects.map(project => scrape(project.topic, project.url)));
+    await Promise.all(
+        config.projects
+            .filter(project => !project.disabled)
+            .map(project => scrape(project.topic, project.url))
+    );
 };
 
 program();
