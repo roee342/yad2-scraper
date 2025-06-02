@@ -1,10 +1,31 @@
 {
-  "telegramApiToken": null,
-  "chatId": null,
+  "telegramApiToken": 8063782325:AAHEhzS06dOCFBI1ebgd-7PwksxJsWE3XMs,
+  "chatId": 6895744143,
+{
   "projects": [
     {
-      "topic": "",
-      "url": ""
+      "topic": "קריית ראשון",
+      "url": "https://www.yad2.co.il/realestate/rent?neighborhood=295&price=0-5600&rooms=2-3.5"
+    },
+    {
+      "topic": "קריית גנים",
+      "url": "https://www.yad2.co.il/realestate/rent?neighborhood=296&price=0-5600&rooms=2-3.5"
+    },
+    {
+      "topic": "רמז",
+      "url": "https://www.yad2.co.il/realestate/rent?neighborhood=289&price=0-5600&rooms=2-3.5"
+    },
+    {
+      "topic": "כצנלסון",
+      "url": "https://www.yad2.co.il/realestate/rent?neighborhood=288&price=0-5600&rooms=2-3.5"
+    },
+    {
+      "topic": "נאות אשלים",
+      "url": "https://www.yad2.co.il/realestate/rent?neighborhood=297&price=0-5600&rooms=2-3.5"
+    },
+    {
+      "topic": "נאות שקמה",
+      "url": "https://www.yad2.co.il/realestate/rent?neighborhood=292&price=0-5600&rooms=2-3.5"
     }
   ]
 }
