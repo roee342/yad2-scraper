@@ -4,97 +4,128 @@ const fs = require('fs');
 const config = require('./config.json');
 
 const getYad2Response = async (url) => {
+    const requestOptions = {
+        method: 'GET',
+        redirect: 'follow'
+    };
     try {
-        const res = await fetch(url);
+        const res = await fetch(url, requestOptions);
         return await res.text();
     } catch (err) {
-        console.log("Request error:", err);
-        return null;
+        console.log(err);
     }
 };
 
-const scrapeItems = async (url) => {
-    const html = await getYad2Response(url);
-    if (!html) throw new Error("Could not get Yad2 response");
-
-    const $ = cheerio.load(html);
-    const titleText = $("title").text();
-    if (titleText === "ShieldSquare Captcha") throw new Error("Bot detection");
-
-    const items = [];
-    $('.feeditem').each((_, elem) => {
-        const pic = $(elem).find('.pic img').attr('src');
-        const title = $(elem).find('.title').text().trim();
-        const price = $(elem).find('.price').text().trim();
-        const location = $(elem).find('.subtitle').text().trim();
-        const itemId = $(elem).attr('id');
-
-        if (pic && itemId) {
-            items.push({
-                id: itemId,
-                img: pic,
-                title,
-                price,
-                location
-            });
+const scrapeItemsAndExtractImgUrls = async (url) => {
+    const yad2Html = await getYad2Response(url);
+    if (!yad2Html) {
+        throw new Error("Could not get Yad2 response");
+    }
+    const $ = cheerio.load(yad2Html);
+    const titleText = $("title").first().text();
+    if (titleText === "ShieldSquare Captcha") {
+        throw new Error("Bot detection");
+    }
+    const $feedItems = $(".feeditem").find(".pic");
+    if (!$feedItems) {
+        throw new Error("Could not find feed items");
+    }
+    const imageUrls = [];
+    $feedItems.each((_, elm) => {
+        const imgSrc = $(elm).find("img").attr('src');
+        if (imgSrc) {
+            imageUrls.push(imgSrc);
         }
     });
-    return items;
+    return imageUrls;
 };
 
-const checkForNewItems = async (items, topic) => {
-    const filePath = `./data/${topic}.json`;
-    let seenIds = [];
+const checkIfHasNewItem = async (imgUrls, topic) => {
+    const dirPath = './data';
+    const filePath = `${dirPath}/${topic}.json`;
 
+    if (!fs.existsSync(dirPath)) {
+        fs.mkdirSync(dirPath);
+    }
+
+    let savedUrls = [];
     try {
-        seenIds = JSON.parse(fs.readFileSync(filePath));
-    } catch (e) {
-        if (e.code === 'ENOENT') {
-            fs.mkdirSync('data', { recursive: true });
-            fs.writeFileSync(filePath, JSON.stringify([]));
+        if (fs.existsSync(filePath)) {
+            const content = fs.readFileSync(filePath, 'utf8');
+            savedUrls = JSON.parse(content);
         } else {
-            console.error(e);
-            throw new Error("Could not read or write file");
+            fs.writeFileSync(filePath, '[]');
         }
+    } catch (e) {
+        console.log(e);
+        throw new Error(`Could not read or create ${filePath}`);
     }
 
-    const newItems = items.filter(item => !seenIds.includes(item.id));
-    if (newItems.length > 0) {
-        const updated = [...new Set([...seenIds, ...newItems.map(i => i.id)])];
-        fs.writeFileSync(filePath, JSON.stringify(updated, null, 2));
-        fs.writeFileSync("push_me", "");
+    let shouldUpdateFile = false;
+    savedUrls = savedUrls.filter(savedUrl => {
+        shouldUpdateFile = true;
+        return imgUrls.includes(savedUrl);
+    });
+
+    const newItems = [];
+    imgUrls.forEach(url => {
+        if (!savedUrls.includes(url)) {
+            savedUrls.push(url);
+            newItems.push(url);
+            shouldUpdateFile = true;
+        }
+    });
+
+    if (shouldUpdateFile) {
+        const updatedUrls = JSON.stringify(savedUrls, null, 2);
+        fs.writeFileSync(filePath, updatedUrls);
+        await createPushFlagForWorkflow();
     }
+
     return newItems;
+};
+
+const createPushFlagForWorkflow = () => {
+    fs.writeFileSync("push_me", "");
 };
 
 const scrape = async (topic, url) => {
     const apiToken = process.env.API_TOKEN || config.telegramApiToken;
     const chatId = process.env.CHAT_ID || config.chatId;
     const telenode = new Telenode({ apiToken });
-
     try {
-        const items = await scrapeItems(url);
-        const newItems = await checkForNewItems(items, topic);
-
+        await telenode.sendTextMessage(`Starting scanning ${topic} on link:\n${url}`, chatId);
+        const scrapeImgResults = await scrapeItemsAndExtractImgUrls(url);
+        const newItems = await checkIfHasNewItem(scrapeImgResults, topic);
         if (newItems.length > 0) {
-            for (const item of newItems) {
-                const message = `🏠 ${item.title || 'No title'}\n📍 ${item.location || 'Unknown'}\n💰 ${item.price || 'No price'}\n🖼️ ${item.img}`;
-                await telenode.sendTextMessage(message, chatId);
-            }
+            const newItemsJoined = newItems.join("\n----------\n");
+            const msg = `${newItems.length} new items:\n${newItemsJoined}`;
+            await telenode.sendTextMessage(msg, chatId);
+        } else {
+            await telenode.sendTextMessage("No new items were added", chatId);
         }
     } catch (e) {
-        const errMsg = e?.message || String(e);
-        await telenode.sendTextMessage(`Scan failed: ${errMsg}`, chatId);
-        throw e;
+        let errMsg = e?.message || "";
+        if (errMsg) {
+            errMsg = `Error: ${errMsg}`;
+        }
+        await telenode.sendTextMessage(`Scan workflow failed... 😥\n${errMsg}`, chatId);
+        throw new Error(e);
     }
 };
 
 const program = async () => {
-    await Promise.all(
-        config.projects
-            .filter(project => !project.disabled)
-            .map(project => scrape(project.topic, project.url))
-    );
+    await Promise.all(config.projects.filter(project => {
+        if (project.disabled) {
+            console.log(`Topic "${project.topic}" is disabled. Skipping.`);
+        }
+        return !project.disabled;
+    }).map(async project => {
+        await scrape(project.topic, project.url);
+    }));
 };
 
 program();
+
+
+
